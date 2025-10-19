@@ -82,9 +82,9 @@ void UDashComponent::TickComponent(float DeltaTime, ELevelTick TickType, FActorC
 		else
 		{
 			float Speed = FMath::InterpEaseInOut(0.f, DashSpeed, Alpha, 3.f);
-			FVector Velocity = CharacterOwner->GetActorForwardVector() * Speed;
+			float Input = FMath::InterpEaseInOut(0.f, 1.f, Alpha, 3.f);
 			FHitResult Hit;
-			CharacterOwner->SetActorLocation(CharacterOwner->GetActorLocation() + Velocity * DeltaTime, true, &Hit, ETeleportType::None);
+			CharacterOwner->GetCharacterMovement()->AddInputVector(Input * CharacterOwner->GetActorForwardVector(), true);
 
 			if (Hit.bBlockingHit)
 			{
@@ -175,7 +175,6 @@ void UDashComponent::OnRep_Dashing(bool bWasDashing)
 void UDashComponent::OnStartDashing()
 {
 	LastTimeDashed = GetWorld()->TimeSeconds;
-	CharacterOwner->GetCharacterMovement()->bIgnoreClientMovementErrorChecksAndCorrection = true;
 	auto* PC = Cast<APlayerController>(CharacterOwner->GetController());
 
 	if (bDashTowardsControllerRotation)
@@ -188,6 +187,11 @@ void UDashComponent::OnStartDashing()
 	CachedFOV = UGameplayStatics::GetPlayerCameraManager(this, 0)->GetFOVAngle();
 
 	CharacterOwner->GetCharacterMovement()->SetMovementMode(MOVE_Flying);
+	CharacterOwner->GetCharacterMovement()->StopActiveMovement();
+	CachedSpeed = CharacterOwner->GetCharacterMovement()->MaxFlySpeed;
+	CachedAcceleration = CharacterOwner->GetCharacterMovement()->MaxAcceleration;
+	CharacterOwner->GetCharacterMovement()->MaxFlySpeed = DashSpeed;
+	CharacterOwner->GetCharacterMovement()->MaxAcceleration = DashAcceleration;
 
 	PC->ClientIgnoreMoveInput(true);
 	PC->ClientIgnoreLookInput(true);
@@ -202,10 +206,11 @@ void UDashComponent::OnStartDashing()
 
 void UDashComponent::OnStopDashing()
 {
-	CharacterOwner->GetCharacterMovement()->bIgnoreClientMovementErrorChecksAndCorrection = false;
 	auto* PC = Cast<APlayerController>(CharacterOwner->GetController());
 	CharacterOwner->GetCharacterMovement()->SetMovementMode(MOVE_Walking);
 	CharacterOwner->GetCharacterMovement()->StopActiveMovement();
+	CharacterOwner->GetCharacterMovement()->MaxFlySpeed = CachedSpeed;
+	CharacterOwner->GetCharacterMovement()->MaxAcceleration = CachedAcceleration;
 	
 	UGameplayStatics::GetPlayerCameraManager(this, 0)->SetFOV(CachedFOV);
 

@@ -31,7 +31,10 @@ protected:
 	void OnStopDashing();
 	
 	UPROPERTY(EditAnywhere, Category="Movement|Dash")
-	float DashSpeed = 500;
+	float DashSpeed = 1500;
+	
+	UPROPERTY(EditAnywhere, Category="Movement|Dash")
+	float DashAcceleration = 6000;
 	
 	UPROPERTY(EditAnywhere, Category="Movement|Dash")
 	float DashCooldown = 3;
@@ -91,6 +94,8 @@ private:
 	UPROPERTY(ReplicatedUsing=OnRep_Dashing)
 	bool bDashing = false;
 	float CachedFOV;
+	float CachedSpeed;
+	float CachedAcceleration;
 
 	ACharacterTestCharacter* CharacterOwner;
 };
