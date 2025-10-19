@@ -81,7 +81,6 @@ void UDashComponent::TickComponent(float DeltaTime, ELevelTick TickType, FActorC
 		}
 		else
 		{
-			float Speed = FMath::InterpEaseInOut(0.f, DashSpeed, Alpha, 3.f);
 			float Input = FMath::InterpEaseInOut(0.f, 1.f, Alpha, 3.f);
 			FHitResult Hit;
 			CharacterOwner->GetCharacterMovement()->AddInputVector(Input * CharacterOwner->GetActorForwardVector(), true);
@@ -92,8 +91,11 @@ void UDashComponent::TickComponent(float DeltaTime, ELevelTick TickType, FActorC
 			}
 			else
 			{
-				float FOV = FMath::InterpEaseInOut(CachedFOV, DashFOV, Alpha, 3.f);
-				UGameplayStatics::GetPlayerCameraManager(this, 0)->SetFOV(FOV);
+				if (CharacterOwner->IsLocallyControlled())
+				{
+					float FOV = FMath::InterpEaseInOut(CachedFOV, DashFOV, Alpha, 3.f);
+					UGameplayStatics::GetPlayerCameraManager(this, 0)->SetFOV(FOV);	
+				}
 
 				if (bLerpCameraRotationToPlayer)
 				{
@@ -184,7 +186,10 @@ void UDashComponent::OnStartDashing()
 		CharacterOwner->SetActorRotation(ControlRotation);	
 	}
 
-	CachedFOV = UGameplayStatics::GetPlayerCameraManager(this, 0)->GetFOVAngle();
+	if (CharacterOwner->IsLocallyControlled())
+	{
+		CachedFOV = UGameplayStatics::GetPlayerCameraManager(this, 0)->GetFOVAngle();	
+	}
 
 	CharacterOwner->GetCharacterMovement()->SetMovementMode(MOVE_Flying);
 	CharacterOwner->GetCharacterMovement()->StopActiveMovement();
@@ -211,8 +216,11 @@ void UDashComponent::OnStopDashing()
 	CharacterOwner->GetCharacterMovement()->StopActiveMovement();
 	CharacterOwner->GetCharacterMovement()->MaxFlySpeed = CachedSpeed;
 	CharacterOwner->GetCharacterMovement()->MaxAcceleration = CachedAcceleration;
-	
-	UGameplayStatics::GetPlayerCameraManager(this, 0)->SetFOV(CachedFOV);
+
+	if (CharacterOwner->IsLocallyControlled())
+	{
+		UGameplayStatics::GetPlayerCameraManager(this, 0)->SetFOV(CachedFOV);
+	}
 
 	PC->ClientIgnoreMoveInput(false);
 	PC->ClientIgnoreLookInput(false);	
