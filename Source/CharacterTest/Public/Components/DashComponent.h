@@ -24,6 +24,11 @@ protected:
 	// Called when the game starts
 	virtual void BeginPlay() override;
 	bool CanDash() const;
+
+	UFUNCTION()
+	void OnRep_Dashing(bool bWasDashing);
+	void OnStartDashing();
+	void OnStopDashing();
 	
 	UPROPERTY(EditAnywhere, Category="Movement|Dash")
 	float DashSpeed = 500;
@@ -53,9 +58,23 @@ public:
 	virtual void TickComponent(float DeltaTime, ELevelTick TickType,
 	                           FActorComponentTickFunction* ThisTickFunction) override;
 
+	void StartDashing();
+
+	UFUNCTION(Reliable, Server)
+	void Server_DoDash();
+
+	UFUNCTION(Reliable, Server)
+	void Server_StopDash();
+
+	UFUNCTION(Reliable, Client)
+	void Client_CancelDash();
+
 
 	void DoDash();
 	void StopDashing();
+
+	virtual void GetLifetimeReplicatedProps(TArray<class FLifetimeProperty>& OutLifetimeProps) const override;
+
 
 	DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnDashStarted);
 	UPROPERTY(BlueprintAssignable, Category="Movement|Dash")
@@ -68,6 +87,8 @@ public:
 private:
 
 	float LastTimeDashed = 0;
+
+	UPROPERTY(ReplicatedUsing=OnRep_Dashing)
 	bool bDashing = false;
 	float CachedFOV;
 

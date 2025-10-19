@@ -8,6 +8,7 @@
 #include "GameFramework/Character.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "Kismet/GameplayStatics.h"
+#include "Net/UnrealNetwork.h"
 
 
 // Sets default values for this component's properties
@@ -32,8 +33,37 @@ void UDashComponent::BeginPlay()
 
 bool UDashComponent::CanDash() const
 {
+	auto* PC = Cast<APlayerController>(CharacterOwner->GetController());
 	bool bCooldown = (LastTimeDashed != 0 && GetWorld()->TimeSeconds - LastTimeDashed < DashCooldown);
-	return !bCooldown && !UGameplayStatics::GetPlayerController(this, 0)->IsMoveInputIgnored();
+	return !bCooldown && PC && !PC->IsMoveInputIgnored();
+}
+
+void UDashComponent::DoDash()
+{
+	if (!CharacterOwner || !CharacterOwner->IsLocallyControlled() || !CanDash())
+	{
+		return;
+	}
+
+	if (!CharacterOwner->HasAuthority())
+	{
+		Server_DoDash();
+	}
+	StartDashing();
+}
+
+void UDashComponent::Server_DoDash_Implementation()
+{
+	if (CanDash())
+	{
+		bDashing = true;
+		OnStartDashing();
+	}
+	else
+	{
+		bDashing = false;
+		Client_CancelDash();
+	}
 }
 
 
@@ -42,7 +72,7 @@ void UDashComponent::TickComponent(float DeltaTime, ELevelTick TickType, FActorC
 {
 	Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
 
-	if (bDashing)
+	if (bDashing && CharacterOwner->IsLocallyControlled())
 	{
 		float Alpha = FMath::Min(1, (GetWorld()->TimeSeconds-LastTimeDashed) / DashDuration);
 		if (Alpha == 1 || (CharacterOwner->GetVelocity().IsNearlyZero() && Alpha > 0.1f))
@@ -78,21 +108,79 @@ void UDashComponent::TickComponent(float DeltaTime, ELevelTick TickType, FActorC
 	}
 }
 
-void UDashComponent::DoDash()
+void UDashComponent::StartDashing()
 {
-	if (!CanDash())
+	bDashing = true;
+	OnStartDashing();
+}
+
+void UDashComponent::StopDashing()
+{
+	if (CharacterOwner->IsLocallyControlled() && !CharacterOwner->HasAuthority())
 	{
-		return;
+		Server_StopDash();
+	}
+	
+	bDashing = false;
+	OnStopDashing();
+}
+
+void UDashComponent::Server_StopDash_Implementation()
+{
+	if (bDashing)
+	{
+		StopDashing();
+	}
+}
+
+void UDashComponent::Client_CancelDash_Implementation()
+{
+	if (bDashing)
+	{
+		StopDashing();
+	}
+}
+
+void UDashComponent::GetLifetimeReplicatedProps(TArray<class FLifetimeProperty>& OutLifetimeProps) const
+{
+	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
+
+	DOREPLIFETIME(UDashComponent, bDashing);
+}
+
+void UDashComponent::OnRep_Dashing(bool bWasDashing)
+{
+	if (UCharacterTestAnimInstance* AnimInstance = Cast<UCharacterTestAnimInstance>(CharacterOwner->GetMesh()->GetAnimInstance()))
+	{
+		AnimInstance->bIsDashing = bDashing;
 	}
 
-	bDashing = true;
-	LastTimeDashed = GetWorld()->TimeSeconds;
+	if (bWasDashing != bDashing)
+	{
+		if (CharacterOwner->IsLocallyControlled())
+		{
+			if (!bDashing)
+			{
+				OnStopDashing();
+			}
+			else if (bDashing)
+			{
+				OnStartDashing();
+			}
+		}
+	}
+	
+}
 
-	auto* PlayerController = UGameplayStatics::GetPlayerController(this, 0);
+void UDashComponent::OnStartDashing()
+{
+	LastTimeDashed = GetWorld()->TimeSeconds;
+	CharacterOwner->GetCharacterMovement()->bIgnoreClientMovementErrorChecksAndCorrection = true;
+	auto* PC = Cast<APlayerController>(CharacterOwner->GetController());
 
 	if (bDashTowardsControllerRotation)
 	{
-		FRotator ControlRotation = PlayerController->GetControlRotation();
+		FRotator ControlRotation = PC->GetControlRotation();
 		ControlRotation.Roll = ControlRotation.Pitch = 0;
 		CharacterOwner->SetActorRotation(ControlRotation);	
 	}
@@ -101,8 +189,8 @@ void UDashComponent::DoDash()
 
 	CharacterOwner->GetCharacterMovement()->SetMovementMode(MOVE_Flying);
 
-	PlayerController->ClientIgnoreMoveInput(true);
-	PlayerController->ClientIgnoreLookInput(true);
+	PC->ClientIgnoreMoveInput(true);
+	PC->ClientIgnoreLookInput(true);
 
 	if (UCharacterTestAnimInstance* AnimInstance = Cast<UCharacterTestAnimInstance>(CharacterOwner->GetMesh()->GetAnimInstance()))
 	{
@@ -112,18 +200,17 @@ void UDashComponent::DoDash()
 	OnDashStarted.Broadcast();
 }
 
-void UDashComponent::StopDashing()
+void UDashComponent::OnStopDashing()
 {
-	bDashing = false;
+	CharacterOwner->GetCharacterMovement()->bIgnoreClientMovementErrorChecksAndCorrection = false;
+	auto* PC = Cast<APlayerController>(CharacterOwner->GetController());
 	CharacterOwner->GetCharacterMovement()->SetMovementMode(MOVE_Walking);
 	CharacterOwner->GetCharacterMovement()->StopActiveMovement();
 	
 	UGameplayStatics::GetPlayerCameraManager(this, 0)->SetFOV(CachedFOV);
-	
-	auto* PlayerController = UGameplayStatics::GetPlayerController(this, 0);
-	
-	PlayerController->ClientIgnoreMoveInput(false);
-	PlayerController->ClientIgnoreLookInput(false);
+
+	PC->ClientIgnoreMoveInput(false);
+	PC->ClientIgnoreLookInput(false);	
 	
 	if (UCharacterTestAnimInstance* AnimInstance = Cast<UCharacterTestAnimInstance>(CharacterOwner->GetMesh()->GetAnimInstance()))
 	{
