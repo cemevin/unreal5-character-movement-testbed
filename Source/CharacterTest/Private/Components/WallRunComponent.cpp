@@ -148,7 +148,6 @@ void UWallRunComponent::OnRep_WallRunState(EWallRunState PrevState)
 
 	if (CharacterOwner->IsLocallyControlled())
 	{
-		// todo
 		if (WallRunState != PrevState)
 		{
 			if (WallRunState == EWallRunState::WallRunNone)
