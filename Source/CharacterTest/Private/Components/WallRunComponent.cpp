@@ -9,6 +9,7 @@
 #include "GameFramework/SpringArmComponent.h"
 #include "Kismet/GameplayStatics.h"
 #include "Kismet/KismetMathLibrary.h"
+#include "Net/UnrealNetwork.h"
 #include "Public/CharacterTestAnimInstance.h"
 
 // Sets default values for this component's properties
@@ -21,6 +22,12 @@ UWallRunComponent::UWallRunComponent()
 	// ...
 }
 
+void UWallRunComponent::GetLifetimeReplicatedProps(TArray<class FLifetimeProperty>& OutLifetimeProps) const
+{
+	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
+
+	DOREPLIFETIME(UWallRunComponent, WallRunState);
+}
 
 // Called when the game starts
 void UWallRunComponent::BeginPlay()
@@ -36,25 +43,59 @@ void UWallRunComponent::BeginPlay()
 
 bool UWallRunComponent::CanWallRun()
 {
-	return !bIsWallRunning && !CharacterOwner->IsMoveInputIgnored() && CharacterOwner->GetCharacterMovement()->IsFalling();
+	return WallRunState == EWallRunState::WallRunNone && !CharacterOwner->IsMoveInputIgnored() && CharacterOwner->GetCharacterMovement()->IsFalling();
 }
 
-void UWallRunComponent::StartWallRunning(const FHitResult& HitResult)
+bool UWallRunComponent::CanWallRunFrom(const FHitResult& HitResult) const
 {
-	if (LastTimeWallRun != 0 && HitResult.GetActor() == WallRunHitResult.GetActor() && GetWorld()->TimeSeconds - LastTimeWallRun < WallRunTimeout)
+	// server validates if client can wall run from this position
+	AActor* Wall = HitResult.GetActor();
+
+	if (!Wall || Wall->IsPendingKillPending() || !Wall->ActorHasTag(WallRunTag))
 	{
-		return;
+		return false;
+	}
+
+	constexpr float MaxDistFromWallPoint = 250;
+	const bool bFacingWall = CharacterOwner->GetActorForwardVector().Dot(HitResult.ImpactNormal) < 0;
+	if (!bFacingWall)
+	{
+		return false;
 	}
 	
-	bIsWallRunning = true;
+	const bool bCloseToWall = (CharacterOwner->GetActorLocation() - HitResult.ImpactPoint).SizeSquared() < MaxDistFromWallPoint * MaxDistFromWallPoint;
+	if (!bCloseToWall)
+	{
+		return false;
+	}
+	
+	const bool bSameWallTimeout = LastTimeWallRun != 0 && Wall == WallRunHitResult.GetActor() && GetWorld()->TimeSeconds - LastTimeWallRun < WallRunTimeout;
+	if (bSameWallTimeout)
+	{
+		return false;
+	}
+	
+	return true;
+}
+
+void UWallRunComponent::OnStartWallRunning(const FHitResult& HitResult)
+{
 	WallRunHitResult = HitResult;
 	LastTimeWallRunStarted = GetWorld()->TimeSeconds;
 
-	bIsWallRunningRight =  WallRunHitResult.ImpactNormal.Dot(CharacterOwner->GetActorRightVector()) > 0;
+	bool bIsWallRunningRight =  WallRunHitResult.ImpactNormal.Dot(CharacterOwner->GetActorRightVector()) > 0;
+	WallRunState = bIsWallRunningRight ? EWallRunState::WallRunRight : EWallRunState::WallRunLeft;
 	
-
 	CharacterOwner->GetCharacterMovement()->SetMovementMode(MOVE_Flying);
 	CharacterOwner->GetCharacterMovement()->StopActiveMovement();
+
+	if (bOverrideWalkSpeed)
+	{
+		CachedSpeed = CharacterOwner->GetCharacterMovement()->MaxFlySpeed;
+		CachedAcceleration = CharacterOwner->GetCharacterMovement()->MaxAcceleration;
+		CharacterOwner->GetCharacterMovement()->MaxFlySpeed = WallRunSpeed;
+		CharacterOwner->GetCharacterMovement()->MaxAcceleration = WallRunAcceleration;
+	}
 	
 	FRotator Rot = UKismetMathLibrary::MakeRotFromYZ(WallRunHitResult.ImpactNormal * (bIsWallRunningRight ? 1 : -1), FVector::UpVector);
 	CharacterOwner->SetActorRotation(Rot);
@@ -70,17 +111,102 @@ void UWallRunComponent::StartWallRunning(const FHitResult& HitResult)
 	APlayerController* PC = UGameplayStatics::GetPlayerController(this, 0);
 	PC->ClientIgnoreLookInput(true);
 	PC->ClientIgnoreMoveInput(true);
+}
 
+void UWallRunComponent::Server_StartWallRunning_Implementation(const FHitResult& HitResult)
+{
+	if (!CanWallRunFrom(HitResult))
+	{
+		Client_CancelWallRun();
+		OnStopWallRunning(false);
+	}
+	else
+	{
+		OnStartWallRunning(HitResult);
+	}
+}
+
+void UWallRunComponent::Client_CancelWallRun_Implementation()
+{
+	OnStopWallRunning(false);
+}
+
+void UWallRunComponent::Server_StopWallRunning_Implementation(bool bLaunch)
+{
+	if (IsWallRunning())
+	{
+		OnStopWallRunning(bLaunch);
+	}
+}
+
+void UWallRunComponent::OnRep_WallRunState(EWallRunState PrevState)
+{
+	if (CharacterOwner->HasAuthority())
+	{
+		return;
+	}
+
+	if (CharacterOwner->IsLocallyControlled())
+	{
+		// todo
+		if (WallRunState != PrevState)
+		{
+			if (WallRunState == EWallRunState::WallRunNone)
+			{
+				OnStopWallRunning(false);
+			}
+		}
+	}
+	else
+	{
+		if (UCharacterTestAnimInstance* AnimInstance = Cast<UCharacterTestAnimInstance>(CharacterOwner->GetMesh()->GetAnimInstance()))
+		{
+			AnimInstance->bIsWallRunningRight = WallRunState == EWallRunState::WallRunRight;
+			AnimInstance->bIsWallRunningLeft = WallRunState == EWallRunState::WallRunLeft;
+		}
+	}
+}
+
+void UWallRunComponent::StartWallRunning(const FHitResult& HitResult)
+{
+	// same wall check
+	if (LastTimeWallRun != 0 && HitResult.GetActor() == WallRunHitResult.GetActor() && GetWorld()->TimeSeconds - LastTimeWallRun < WallRunTimeout)
+	{
+		return;
+	}
+
+	if (!CharacterOwner->HasAuthority())
+	{
+		Server_StartWallRunning(HitResult);
+	}
+	
+	OnStartWallRunning(HitResult);
+}
+
+void UWallRunComponent::StopWallRun(bool bLaunch)
+{
+	if (!CharacterOwner->HasAuthority())
+	{
+		Server_StopWallRunning(bLaunch);
+	}
+
+	OnStopWallRunning(bLaunch);
 }
 
 
-void UWallRunComponent::StopWallRun()
+void UWallRunComponent::OnStopWallRunning(bool bLaunch)
 {
-	//
-	bIsWallRunning = false;
+	EWallRunState PreviousState = WallRunState;
+	WallRunState = EWallRunState::WallRunNone;
 	LastTimeWallRun = GetWorld()->GetTimeSeconds();
 
 	CharacterOwner->GetCharacterMovement()->SetMovementMode(MOVE_Falling);
+	
+	if (bOverrideWalkSpeed)
+	{
+		CharacterOwner->GetCharacterMovement()->MaxFlySpeed = CachedSpeed;
+		CharacterOwner->GetCharacterMovement()->MaxAcceleration = CachedAcceleration;
+	}
 
 	if (UCharacterTestAnimInstance* AnimInstance = Cast<UCharacterTestAnimInstance>(CharacterOwner->GetMesh()->GetAnimInstance()))
 	{
@@ -91,15 +217,10 @@ void UWallRunComponent::StopWallRun()
 	APlayerController* PC = UGameplayStatics::GetPlayerController(this, 0);
 	PC->ClientIgnoreLookInput(false);
 	PC->ClientIgnoreMoveInput(false);
-}
 
-void UWallRunComponent::OnJumpAttempted()
-{
-	if (IsWallRunning())
+	if (bLaunch)
 	{
-		bool bWasWallRunningRight = bIsWallRunningRight;
-		StopWallRun();
-
+		bool bWasWallRunningRight = PreviousState == EWallRunState::WallRunRight;
 		FVector Launch;
 		if (bOverrideLaunchVelocity)
 		{
@@ -119,15 +240,28 @@ void UWallRunComponent::OnJumpAttempted()
 	}
 }
 
+void UWallRunComponent::OnJumpAttempted()
+{
+	if (IsWallRunning())
+	{
+		StopWallRun(true);
+	}
+}
+
 // Called every frame
 void UWallRunComponent::TickComponent(float DeltaTime, ELevelTick TickType,
                                          FActorComponentTickFunction* ThisTickFunction)
 {
 	Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
 
+	if (!CharacterOwner->HasAuthority() && !CharacterOwner->IsLocallyControlled())
+	{
+		return;
+	}
+
 	FrameCounter++;
 
-	if (CanWallRun() && CharacterOwner->GetLastMovementInputVector().Dot(CharacterOwner->GetActorForwardVector()) >= 0)
+	if (CanWallRun() && CharacterOwner->GetLastMovementInputVector().Dot(CharacterOwner->GetActorForwardVector()) >= 0 && CharacterOwner->IsLocallyControlled())
 	{
 		FVector Start = CharacterOwner->GetActorLocation() + FVector::UpVector * WallRunHeightOffset;
 		FVector End = Start + CharacterOwner->GetActorForwardVector() * (CharacterOwner->GetSimpleCollisionRadius() + WallRunOffset);
@@ -167,7 +301,8 @@ void UWallRunComponent::TickComponent(float DeltaTime, ELevelTick TickType,
 			FinalPos.Z = Z;
 		}
 		
-		CharacterOwner->SetActorLocation(FinalPos, true, &Hit, ETeleportType::TeleportPhysics);
+		// CharacterOwner->SetActorLocation(FinalPos, true, &Hit, ETeleportType::TeleportPhysics);
+		CharacterOwner->AddMovementInput((FinalPos - CharacterOwner->GetActorLocation()).GetSafeNormal(), 1, true);
 		CharacterOwner->GetCharacterMovement()->Velocity.Z = 0;
 		
 		FRotator CameraRot = CharacterOwner->GetControlRotation();
@@ -177,14 +312,14 @@ void UWallRunComponent::TickComponent(float DeltaTime, ELevelTick TickType,
 
 		if (Hit.bBlockingHit)
 		{
-			StopWallRun();
+			StopWallRun(false);
 		}
 		else
 		{
 			// update wall run
 			FHitResult Result;
 			FVector Start = CharacterOwner->GetActorLocation();
-			FVector End = CharacterOwner->GetActorLocation() + CharacterOwner->GetActorRightVector() * (bIsWallRunningRight ? -1 : 1) * CharacterOwner->GetSimpleCollisionRadius() * 2;
+			FVector End = CharacterOwner->GetActorLocation() + CharacterOwner->GetActorRightVector() * (WallRunState == EWallRunState::WallRunRight ? -1 : 1) * CharacterOwner->GetSimpleCollisionRadius() * 2;
 			FCollisionObjectQueryParams ObjectQueryParams;
 			ObjectQueryParams.AddObjectTypesToQuery(ECC_WorldStatic);
 			FCollisionQueryParams CollisionParams;
@@ -193,7 +328,7 @@ void UWallRunComponent::TickComponent(float DeltaTime, ELevelTick TickType,
 
 			if (!bHit || Result.GetActor() != WallRunHitResult.GetActor())
 			{
-				StopWallRun();
+				StopWallRun(false);
 			}
 		}
 	}

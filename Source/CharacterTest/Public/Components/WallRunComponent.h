@@ -9,6 +9,14 @@
 
 class ACharacterTestCharacter;
 
+UENUM(BlueprintType)
+enum class EWallRunState : uint8
+{
+	WallRunNone,
+	WallRunRight,
+	WallRunLeft
+};
+
 UCLASS(ClassGroup=(Custom), meta=(BlueprintSpawnableComponent), Blueprintable)
 class CHARACTERTEST_API UWallRunComponent : public UActorComponent
 {
@@ -19,21 +27,40 @@ public:
 	// Sets default values for this component's properties
 	UWallRunComponent();
 
+	virtual void GetLifetimeReplicatedProps(TArray<class FLifetimeProperty>& OutLifetimeProps) const override;
+
 protected:
 
 	// Called when the game starts
 	virtual void BeginPlay() override;
 
 	bool CanWallRun();
+	bool CanWallRunFrom(const FHitResult& HitResult) const;
 
-	bool IsWallRunning() const { return bIsWallRunning; }
+	void OnStartWallRunning(const FHitResult& HitResult);
+
+	bool IsWallRunning() const { return WallRunState != EWallRunState::WallRunNone; }
+
+	UFUNCTION(Reliable, Server)
+	void Server_StartWallRunning(const FHitResult& HitResult);
+
+	UFUNCTION(Reliable, Server)
+	void Server_StopWallRunning(bool bLaunch);
+
+	UFUNCTION(Reliable, Client)
+	void Client_CancelWallRun();
+
+	UFUNCTION()
+	void OnRep_WallRunState(EWallRunState PrevState);
 
 	void StartWallRunning(const FHitResult& HitResult);
+
+	void OnStopWallRunning(bool bLaunch);
 
 	UFUNCTION(BlueprintImplementableEvent)
 	void BP_OnWallRun();
 
-	void StopWallRun();
+	void StopWallRun(bool bLaunch);
 
 	UFUNCTION()
 	void OnJumpAttempted();
@@ -49,6 +76,9 @@ protected:
 
 	UPROPERTY(EditAnywhere, meta=(EditCondition="bOverrideWalkSpeed"))
 	float WallRunSpeed = 300;
+
+	UPROPERTY(EditAnywhere, meta=(EditCondition="bOverrideWalkSpeed"))
+	float WallRunAcceleration = 1200;
 
 	UPROPERTY(EditAnywhere)
 	float WallRunOffset = 35;
@@ -81,11 +111,14 @@ public:
 	                           FActorComponentTickFunction* ThisTickFunction) override;
 
 private:
-	bool bIsWallRunning = false;
-	bool bIsWallRunningRight;
+	UPROPERTY(ReplicatedUsing=OnRep_WallRunState)
+	EWallRunState WallRunState = EWallRunState::WallRunNone;
+	
 	FHitResult WallRunHitResult;
 	float LastTimeWallRun;
 	float LastTimeWallRunStarted;
 	int FrameCounter;
+	float CachedSpeed;
+	float CachedAcceleration;
 	
 };
