@@ -7,6 +7,26 @@
 #include "LedgeClimbComponent.generated.h"
 class ACharacterTestCharacter;
 
+USTRUCT()
+struct FLedgeClimbState
+{
+	GENERATED_BODY()
+
+	UPROPERTY()
+	bool bIsLedgeClimbing;
+	
+	UPROPERTY()
+	FVector FeetPosition;
+	
+	UPROPERTY()
+	FVector LedgeLocation;
+	
+	UPROPERTY()
+	FRotator LedgeRotation;
+	
+	UPROPERTY()
+	bool bJumpingFromBelow;
+};
 UCLASS(ClassGroup=(Custom), meta=(BlueprintSpawnableComponent), Blueprintable)
 class CHARACTERTEST_API ULedgeClimbComponent : public UActorComponent
 {
@@ -17,14 +37,28 @@ public:
 	// Sets default values for this component's properties
 	ULedgeClimbComponent();
 
+	virtual void GetLifetimeReplicatedProps(TArray<class FLifetimeProperty>& OutLifetimeProps) const override;
+
 protected:
 
 	// Called when the game starts
 	virtual void BeginPlay() override;
 
 	bool CanLedgeClimb();
+	bool CanLedgeClimbTo(const FHitResult& HitResult, const FVector& LedgeLocation);
 
-	bool IsLedgeClimbing() const { return bIsLedgeClimbing; }
+	bool IsLedgeClimbing() const { return LedgeClimbState.bIsLedgeClimbing; }
+
+	UFUNCTION(Reliable, Server)
+	void ServerStartLedgeClimbing(const FHitResult& HitResult, const FVector& FeetPosition, const FVector& LedgeLocation, const FRotator& LedgeRotation, bool bJumpingFromBelow);
+
+	UFUNCTION(Reliable, Client)
+	void Client_CancelLedgeClimb();
+
+	UFUNCTION()
+	void OnRep_LedgeClimb(const FLedgeClimbState& PrevState);
+
+	void OnStartLedgeClimbing();
 
 	void StartLedgeClimbing(const FVector& FeetPosition, const FVector& LedgeLocation, const FRotator& LedgeRotation, bool bJumpingFromBelow);
 
@@ -71,5 +105,7 @@ public:
 	                           FActorComponentTickFunction* ThisTickFunction) override;
 
 private:
-	bool bIsLedgeClimbing = false;
+
+	UPROPERTY(ReplicatedUsing=OnRep_LedgeClimb)
+	FLedgeClimbState LedgeClimbState;
 };

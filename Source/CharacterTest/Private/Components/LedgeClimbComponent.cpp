@@ -8,6 +8,7 @@
 #include "GameFramework/CharacterMovementComponent.h"
 #include "Kismet/GameplayStatics.h"
 #include "Kismet/KismetMathLibrary.h"
+#include "Net/UnrealNetwork.h"
 
 // Sets default values for this component's properties
 ULedgeClimbComponent::ULedgeClimbComponent()
@@ -17,6 +18,13 @@ ULedgeClimbComponent::ULedgeClimbComponent()
 	PrimaryComponentTick.bCanEverTick = true;
 
 	// ...
+}
+
+void ULedgeClimbComponent::GetLifetimeReplicatedProps(TArray<class FLifetimeProperty>& OutLifetimeProps) const
+{
+	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
+
+	DOREPLIFETIME(ULedgeClimbComponent, LedgeClimbState);
 }
 
 
@@ -32,51 +40,133 @@ void ULedgeClimbComponent::BeginPlay()
 
 bool ULedgeClimbComponent::CanLedgeClimb()
 {
-	return !bIsLedgeClimbing && !CharacterOwner->IsMoveInputIgnored() && CharacterOwner->GetCharacterMovement()->IsFalling();
+	return !LedgeClimbState.bIsLedgeClimbing && !CharacterOwner->IsMoveInputIgnored() && CharacterOwner->GetCharacterMovement()->IsFalling();
 }
 
-void ULedgeClimbComponent::StartLedgeClimbing(const FVector& FeetLocation, const FVector& LedgeLocation, const FRotator& LedgeRotation, bool bJumpingFromBelow)
+bool ULedgeClimbComponent::CanLedgeClimbTo(const FHitResult& HitResult, const FVector& LedgeLocation)
 {
-	bIsLedgeClimbing = true;
+	if (CanLedgeClimb())
+	{
+		AActor* HitActor = HitResult.GetActor();
+		if (HitActor && HitActor->ActorHasTag(LedgeTag) )
+		{
+			FVector CharToLedge = (LedgeLocation - CharacterOwner->GetActorLocation());
+			float ForwardDot = CharToLedge.Dot(CharacterOwner->GetActorForwardVector());
+			float UpDot = FMath::Abs(CharToLedge.Dot(FVector::UpVector));
+			
+			const bool bCloseEnough = UpDot < DetectionMaxHeight * DetectionMaxHeight * 1.1f
+				&& ForwardDot > 0 && ForwardDot < DetectionDistanceForward * DetectionDistanceForward * 1.1f;
 
-	FRotator CharacterRotation = LedgeRotation;
+			return bCloseEnough;
+		}
+	}
+
+	return false;
+}
+
+void ULedgeClimbComponent::ServerStartLedgeClimbing_Implementation(const FHitResult& HitResult, const FVector& FeetPosition,
+                                                                   const FVector& LedgeLocation, const FRotator& LedgeRotation, bool bJumpingFromBelow)
+{
+	if (!CanLedgeClimbTo(HitResult, LedgeLocation))
+	{
+		Client_CancelLedgeClimb();
+	}
+	else
+	{
+		StartLedgeClimbing(FeetPosition, LedgeLocation, LedgeRotation, bJumpingFromBelow);
+	}
+}
+
+void ULedgeClimbComponent::Client_CancelLedgeClimb_Implementation()
+{
+	if (LedgeClimbState.bIsLedgeClimbing)
+	{
+		OnLedgeClimbEnded();
+		CharacterOwner->GetMesh()->GetAnimInstance()->StopAllMontages(0);
+	}
+}
+
+void ULedgeClimbComponent::OnRep_LedgeClimb(const FLedgeClimbState& PrevState)
+{
+	if (!CharacterOwner->IsLocallyControlled())
+	{
+		if (LedgeClimbState.bIsLedgeClimbing)
+		{
+			OnStartLedgeClimbing();
+		}
+		else
+		{
+			OnLedgeClimbEnded();
+		}
+	}
+}
+
+void ULedgeClimbComponent::OnStartLedgeClimbing()
+{
+	FRotator CharacterRotation = LedgeClimbState.LedgeRotation;
 	CharacterRotation.Yaw += 180;
 	CharacterOwner->SetActorRotation(CharacterRotation);
 
-	CharacterOwner->GetCharacterMovement()->StopActiveMovement();
-	CharacterOwner->GetCharacterMovement()->SetMovementMode(MOVE_Flying);
-	CharacterOwner->SetActorEnableCollision(false);
-	APlayerController* PC = UGameplayStatics::GetPlayerController(this, 0);
-	PC->ClientIgnoreLookInput(true);
-	PC->ClientIgnoreMoveInput(true);
-
-	BP_OnLedgeClimb(bJumpingFromBelow);
+	BP_OnLedgeClimb(LedgeClimbState.bJumpingFromBelow);
 	
 	FMotionWarpingTarget Target;
-	Target.Location = LedgeLocation;
+	Target.Location = LedgeClimbState.LedgeLocation;
 	Target.Name = WarpTargetNameUp;
 	CharacterOwner->GetMotionWarping()->AddOrUpdateWarpTarget(Target);
 	
 	FMotionWarpingTarget TargetFwd;
-	Target.Location = FeetLocation;
+	Target.Location = LedgeClimbState.FeetPosition;
 	Target.Name = WarpTargetNameForward;
 	CharacterOwner->GetMotionWarping()->AddOrUpdateWarpTarget(TargetFwd);
+
+	CharacterOwner->GetCharacterMovement()->bIgnoreClientMovementErrorChecksAndCorrection = true;
+	CharacterOwner->GetCharacterMovement()->StopActiveMovement();
+	CharacterOwner->GetCharacterMovement()->SetMovementMode(MOVE_Flying);
+	CharacterOwner->SetActorEnableCollision(false);
+
+	if (CharacterOwner->IsLocallyControlled() || CharacterOwner->HasAuthority())
+	{
+		LedgeClimbState.bIsLedgeClimbing = true;
+
+		if (CharacterOwner->IsLocallyControlled())
+		{
+			APlayerController* PC = Cast<APlayerController>(CharacterOwner->GetController());
+			PC->ClientIgnoreLookInput(true);
+			PC->ClientIgnoreMoveInput(true);
+		}
+	}
+}
+
+void ULedgeClimbComponent::StartLedgeClimbing(const FVector& FeetLocation, const FVector& LedgeLocation, const FRotator& LedgeRotation, bool bJumpingFromBelow)
+{
+	LedgeClimbState.bIsLedgeClimbing = true;
+	LedgeClimbState.FeetPosition = FeetLocation;
+	LedgeClimbState.LedgeLocation = LedgeLocation;
+	LedgeClimbState.LedgeRotation = LedgeRotation;
+	LedgeClimbState.bJumpingFromBelow = bJumpingFromBelow;
+
+	OnStartLedgeClimbing();
 }
 
 void ULedgeClimbComponent::OnLedgeClimbEnded()
 {
-	//
-	bIsLedgeClimbing = false;
-	
 	CharacterOwner->GetMotionWarping()->RemoveAllWarpTargets();
-
+	CharacterOwner->GetCharacterMovement()->bIgnoreClientMovementErrorChecksAndCorrection = false;
 	CharacterOwner->SetActorEnableCollision(true);
 	CharacterOwner->GetCharacterMovement()->SetMovementMode(MOVE_Walking);
 	CharacterOwner->GetCharacterMovement()->StopActiveMovement();
 	
-	APlayerController* PC = UGameplayStatics::GetPlayerController(this, 0);
-	PC->ClientIgnoreLookInput(false);
-	PC->ClientIgnoreMoveInput(false);
+	if (CharacterOwner->IsLocallyControlled() || CharacterOwner->HasAuthority())
+	{
+		LedgeClimbState.bIsLedgeClimbing = false;
+
+		if (CharacterOwner->IsLocallyControlled())
+		{
+			APlayerController* PC = Cast<APlayerController>(CharacterOwner->GetController());
+			PC->ClientIgnoreLookInput(false);
+			PC->ClientIgnoreMoveInput(false);
+		}
+	}
 }
 
 // Called every frame
@@ -85,7 +175,12 @@ void ULedgeClimbComponent::TickComponent(float DeltaTime, ELevelTick TickType,
 {
 	Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
 
-	if (CanLedgeClimb() && CharacterOwner->GetLastMovementInputVector().Dot(CharacterOwner->GetActorForwardVector()) >= 0)
+	if (!CharacterOwner->IsLocallyControlled() && !CharacterOwner->HasAuthority())
+	{
+		return;
+	}
+	
+	if (CanLedgeClimb() && CharacterOwner->GetLastMovementInputVector().Dot(CharacterOwner->GetActorForwardVector()) >= 0 && CharacterOwner->IsLocallyControlled())
 	{
 		FVector Start = CharacterOwner->GetActorLocation() + FVector::UpVector * DetectionMinHeight;
 		FVector End = CharacterOwner->GetActorLocation() + FVector::UpVector * DetectionMaxHeight + CharacterOwner->GetActorForwardVector() * DetectionDistanceForward;
@@ -120,13 +215,18 @@ void ULedgeClimbComponent::TickComponent(float DeltaTime, ELevelTick TickType,
 						FRotator LedgeRotation = UKismetMathLibrary::MakeRotFromXZ(LedgeHitResult.GetActor()->GetActorForwardVector(), HorizontalHitResult.ImpactNormal);
 						FVector FeetLocation = LedgeLocation + CharacterOwner->GetSimpleCollisionRadius() * ClimbDirection;
 						bool bJumpingFromBelow = FeetLocation.Z - CharacterOwner->GetActorLocation().Z > MantleFromBelowHeightThreshold;
+
+						if (!CharacterOwner->HasAuthority())
+						{
+							ServerStartLedgeClimbing(LedgeHitResult, FeetLocation, LedgeLocation + ClimbDirection * MantleHandAdjustment.X + FVector::UpVector * MantleHandAdjustment.Z, LedgeRotation, bJumpingFromBelow);
+						}
 						StartLedgeClimbing(FeetLocation, LedgeLocation + ClimbDirection * MantleHandAdjustment.X + FVector::UpVector * MantleHandAdjustment.Z, LedgeRotation, bJumpingFromBelow);
 					}
 				}
 			}
 		}
 	}
-	else if (IsLedgeClimbing())
+	else if (IsLedgeClimbing() && CharacterOwner->IsLocallyControlled())
 	{
 		FRotator CameraRot = CharacterOwner->GetControlRotation();
 		FRotator TargetCameraRot = CameraRot;
