@@ -26,6 +26,11 @@ This project includes custom C++ components to handle complex character traversa
 * **Core Logic:** Primarily driven by **C++** (~95% of the codebase).
 * **Animation:** Uses UE5's modern animation features (Motion Warping) to disconnect rigid animations from dynamic in-game geometry.
 
+## Future Plans (TODO)
+As this is an ongoing testbed, I plan to refactor and upgrade the core architecture to align with AAA multiplayer standards:
+* **Gameplay Ability System (GAS):** Port the current ability logic (Dash, Ledge Climb) over to GAS to better handle ability states, costs, cooldowns, and out-of-the-box replication prediction.
+* **Custom Movement Modes:** Refactor the traversal mechanics (Wall Running, etc.) to use custom movement modes directly within Unreal's `UCharacterMovementComponent` to leverage the engine's native client-side prediction and saved moves functionality.
+
 ## Getting Started
 
 To explore the code or run this project locally:
